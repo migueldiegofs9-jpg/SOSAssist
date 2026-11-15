@@ -1,6 +1,6 @@
--- SOSAssist diag v2.1
+-- SOSAssist diag v2.2
 --[[
-  SOS Assist - Etapa 0: diagnostico (SOMENTE LEITURA) - v2.1
+  SOS Assist - Etapa 0: diagnostico (SOMENTE LEITURA) - v2.2
   Nao clica, nao dispara RemoteEvents, nao intercepta eventos, nao faz
   requisicoes HTTP, nao altera escalacao, mercado nem partidas.
 
@@ -14,10 +14,14 @@
   Chaves aceitas: modo ("ambiente" | "tela"), escopo (nil ou lista de nomes).
   Configuracao presente mas invalida BLOQUEIA a execucao (nao cai no padrao).
 
+  Saida (v2.2): relatorio em painel rolavel (gethui -> CoreGui -> PlayerGui)
+  com botoes Copiar e Fechar. Salvamento em arquivo continua automatico;
+  a area de transferencia so e alterada pelo botao Copiar.
+
   Status: codigo proposto, NAO testado no Delta.
 ]]
 
-local VERSAO = "v2.1"
+local VERSAO = "v2.2"
 local ARGS = { ... }
 
 -- ===== Constantes internas (nao configuraveis por fora) =====
@@ -596,20 +600,153 @@ local okMain, errMain = pcall(main)
 if not okMain then add("ERRO GERAL:", tostring(errMain)) end
 
 local texto = table.concat(out, "\n")
-local status = {}
+
+-- ===== Salvamento (automatico) =====
+local statusArquivo
 local nome = "diag_" .. (MODO or "invalido") .. "_" .. os.time() .. "_"
 	.. string.format("%03d", math.floor((os.clock() % 1) * 1000)) .. ".txt"
 local okW, caminho, errW, notaW = escrever(nome, texto, true)
-status[#status + 1] = okW and ("arquivo: salvo em workspace/" .. caminho .. " (" .. tostring(notaW) .. ")")
+statusArquivo = okW and ("arquivo: salvo em workspace/" .. caminho .. " (" .. tostring(notaW) .. ")")
 	or ("arquivo: NAO salvo (" .. tostring(errW) .. ")")
-if has.setclipboard then
-	local okC, errC = pcall(setclipboard, texto)
-	status[#status + 1] = okC and "area de transferencia: setclipboard sem erro (conteudo nao verificado)"
-		or ("area de transferencia: FALHOU (" .. tostring(errC) .. ")")
-else
-	status[#status + 1] = "area de transferencia: setclipboard ausente"
+
+-- Texto completo mostrado e copiado: relatorio + resultado do salvamento
+local textoCompleto = texto .. "\n-- saida\n" .. statusArquivo
+local statusCopia = "copia: ainda nao feita (use o botao Copiar)"
+
+-- ===== Painel de relatorio (gethui -> CoreGui -> PlayerGui) =====
+-- Nao copia nada automaticamente: a area de transferencia so muda no botao Copiar.
+local NOME_PAINEL = "SOSAssist_Relatorio"
+local LINHAS_POR_BLOCO = 40 -- varios TextLabels em vez de um gigante
+local sgRef
+local painelOk, painelErr = pcall(function()
+	local alvos = {}
+	if has.gethui then alvos[#alvos + 1] = { "gethui()", function() return gethui() end } end
+	alvos[#alvos + 1] = { "CoreGui", function() return game:GetService("CoreGui") end }
+	alvos[#alvos + 1] = { "PlayerGui", function() return pg end }
+
+	local sg = Instance.new("ScreenGui")
+	sgRef = sg
+	sg.Name, sg.ResetOnSpawn, sg.DisplayOrder = NOME_PAINEL, false, 1000
+	pcall(function() sg.IgnoreGuiInset = true end)
+	local onde
+	for _, a in ipairs(alvos) do
+		local okC, c = pcall(a[2])
+		if okC and typeof(c) == "Instance" then
+			pcall(function()
+				local velho = c:FindFirstChild(NOME_PAINEL)
+				if velho then velho:Destroy() end
+			end)
+			local okP = pcall(function() sg.Parent = c end)
+			if okP and sg.Parent ~= nil then onde = a[1] break end
+		end
+	end
+	if not onde then error("nenhum conteiner aceitou o painel") end
+
+	local conexoes = {}
+	local janela = Instance.new("Frame")
+	janela.AnchorPoint, janela.Position = Vector2.new(0.5, 0.5), UDim2.fromScale(0.5, 0.5)
+	janela.Size = UDim2.fromScale(0.9, 0.85)
+	janela.BackgroundColor3, janela.BorderSizePixel = Color3.fromRGB(25, 28, 34), 0
+	janela.Parent = sg
+	local limite = Instance.new("UISizeConstraint")
+	limite.MaxSize = Vector2.new(680, 520)
+	limite.Parent = janela
+	Instance.new("UICorner", janela).CornerRadius = UDim.new(0, 10)
+
+	local titulo = Instance.new("TextLabel")
+	titulo.Size, titulo.Position = UDim2.new(1, -16, 0, 28), UDim2.fromOffset(8, 6)
+	titulo.BackgroundTransparency = 1
+	titulo.Font, titulo.TextSize = Enum.Font.GothamBold, 16
+	titulo.TextColor3 = Color3.fromRGB(120, 230, 140)
+	titulo.TextXAlignment = Enum.TextXAlignment.Left
+	titulo.Text = "SOSAssist diagnostico " .. VERSAO .. " | " .. tostring(MODO or "config invalida")
+		.. " | " .. #out .. " linhas | painel: " .. onde
+	titulo.TextTruncate = Enum.TextTruncate.AtEnd
+	titulo.Parent = janela
+
+	local rolagem = Instance.new("ScrollingFrame")
+	rolagem.Position, rolagem.Size = UDim2.fromOffset(8, 38), UDim2.new(1, -16, 1, -134)
+	rolagem.BackgroundColor3, rolagem.BorderSizePixel = Color3.fromRGB(15, 17, 21), 0
+	rolagem.ScrollBarThickness = 10
+	rolagem.ScrollingDirection = Enum.ScrollingDirection.Y
+	rolagem.CanvasSize = UDim2.new()
+	rolagem.AutomaticCanvasSize = Enum.AutomaticSize.Y
+	rolagem.Parent = janela
+	local lista = Instance.new("UIListLayout")
+	lista.SortOrder = Enum.SortOrder.LayoutOrder
+	lista.Parent = rolagem
+	local margem = Instance.new("UIPadding")
+	margem.PaddingLeft, margem.PaddingTop = UDim.new(0, 6), UDim.new(0, 6)
+	margem.PaddingRight, margem.PaddingBottom = UDim.new(0, 14), UDim.new(0, 6)
+	margem.Parent = rolagem
+
+	local todas = string.split(textoCompleto, "\n")
+	for i = 1, #todas, LINHAS_POR_BLOCO do
+		local l = Instance.new("TextLabel")
+		l.LayoutOrder = i
+		l.Size = UDim2.new(1, 0, 0, 0)
+		l.AutomaticSize = Enum.AutomaticSize.Y
+		l.BackgroundTransparency = 1
+		l.Font, l.TextSize = Enum.Font.Code, 13
+		l.TextColor3 = Color3.fromRGB(225, 225, 225)
+		l.TextXAlignment, l.TextYAlignment = Enum.TextXAlignment.Left, Enum.TextYAlignment.Top
+		l.TextWrapped, l.RichText = true, false
+		l.Text = table.concat(todas, "\n", i, math.min(i + LINHAS_POR_BLOCO - 1, #todas))
+		l.Parent = rolagem
+	end
+
+	local estado = Instance.new("TextLabel")
+	estado.Position, estado.Size = UDim2.new(0, 8, 1, -92), UDim2.new(1, -16, 0, 42)
+	estado.BackgroundTransparency = 1
+	estado.Font, estado.TextSize = Enum.Font.Gotham, 12
+	estado.TextColor3 = Color3.fromRGB(230, 200, 120)
+	estado.TextXAlignment, estado.TextYAlignment = Enum.TextXAlignment.Left, Enum.TextYAlignment.Top
+	estado.TextWrapped, estado.RichText = true, false
+	estado.Parent = janela
+	local function atualizarEstado() estado.Text = statusArquivo .. "\n" .. statusCopia end
+	atualizarEstado()
+
+	local function botao(rotuloBotao, cor, x)
+		local b = Instance.new("TextButton")
+		b.Size, b.Position = UDim2.fromOffset(130, 36), UDim2.new(0.5, x, 1, -44)
+		b.BackgroundColor3, b.BorderSizePixel = cor, 0
+		b.Font, b.TextSize, b.TextColor3 = Enum.Font.GothamBold, 16, Color3.new(1, 1, 1)
+		b.Text = rotuloBotao
+		b.Parent = janela
+		Instance.new("UICorner", b).CornerRadius = UDim.new(0, 8)
+		return b
+	end
+	local copiar = botao("Copiar", Color3.fromRGB(50, 110, 190), -140)
+	local fechar = botao("Fechar", Color3.fromRGB(180, 60, 60), 10)
+
+	conexoes[#conexoes + 1] = copiar.MouseButton1Click:Connect(function()
+		if not has.setclipboard then
+			statusCopia = "copia: setclipboard ausente"
+		else
+			local okC, errC = pcall(setclipboard, textoCompleto)
+			statusCopia = okC
+				and ("copia: setclipboard sem erro as " .. os.date("%H:%M:%S") .. " (conteudo nao verificado)")
+				or ("copia: FALHOU (" .. tostring(errC) .. ")")
+		end
+		pcall(atualizarEstado)
+	end)
+	conexoes[#conexoes + 1] = fechar.MouseButton1Click:Connect(function()
+		for _, c in ipairs(conexoes) do pcall(function() c:Disconnect() end) end
+		pcall(function() sg:Destroy() end)
+	end)
+end)
+
+if not painelOk then
+	if sgRef then pcall(function() sgRef:Destroy() end) end
+	pcall(function()
+		game:GetService("StarterGui"):SetCore("SendNotification", {
+			Title = "SOSAssist: painel falhou",
+			Text = tostring(painelErr) .. " | " .. statusArquivo,
+			Duration = 15,
+		})
+	end)
 end
 
-print(texto)
-print("== SOS Assist: " .. #out .. " linhas")
-for _, s in ipairs(status) do print("== " .. s) end
+-- Console mantido como canal secundario
+print(textoCompleto)
+print("== painel: " .. (painelOk and "criado" or ("FALHOU: " .. tostring(painelErr))))
